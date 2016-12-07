@@ -115,9 +115,10 @@ def Assert(condition, data, summarize=None, name=None):
   NOTE: To ensure that Assert executes, one usually attaches a dependency:
 
   ```python
-   # Ensure maximum element of x is smaller or equal to 1
+  # Ensure maximum element of x is smaller or equal to 1
   assert_op = tf.Assert(tf.less_equal(tf.reduce_max(x), 1.), [x])
-  x = tf.with_dependencies([assert_op], x)
+  with tf.control_dependencies([assert_op]):
+    ... code using x ...
   ```
 
   Args:
@@ -158,9 +159,9 @@ def _Identity(data, name=None):
   Returns:
     A Tensor with the same type and value as the input Tensor.
   """
-  data = ops.convert_to_tensor_or_indexed_slices(data, as_ref=True)
+  data = ops.internal_convert_to_tensor_or_indexed_slices(data, as_ref=True)
   if isinstance(data, ops.Tensor):
-    if data.dtype.is_ref_dtype:
+    if data.dtype._is_ref_dtype:  # pylint: disable=protected-access
       return gen_array_ops._ref_identity(data, name=name)
     else:
       return array_ops.identity(data, name=name)
@@ -175,14 +176,14 @@ def _Identity(data, name=None):
         dense_shape = array_ops.identity(dense_shape, name="dense_shape")
       return ops.IndexedSlices(values, indices, dense_shape)
     else:
-      dense_shape = array_ops.identity(data.shape, name="dense_shape")
+      dense_shape = array_ops.identity(data.dense_shape, name="dense_shape")
       return sparse_tensor.SparseTensor(indices, values, dense_shape)
 
 
 def _NextIteration(data, name=None):
-  data = ops.convert_to_tensor_or_indexed_slices(data, as_ref=True)
+  data = ops.internal_convert_to_tensor_or_indexed_slices(data, as_ref=True)
   if isinstance(data, ops.Tensor):
-    if data.dtype.is_ref_dtype:
+    if data.dtype._is_ref_dtype:   # pylint: disable=protected-access
       return ref_next_iteration(data, name=name)
     else:
       return next_iteration(data, name=name)
@@ -197,7 +198,7 @@ def _NextIteration(data, name=None):
         dense_shape = next_iteration(dense_shape, name="dense_shape")
       return ops.IndexedSlices(values, indices, dense_shape)
     else:
-      dense_shape = next_iteration(data.shape, name="dense_shape")
+      dense_shape = next_iteration(data.dense_shape, name="dense_shape")
       return sparse_tensor.SparseTensor(indices, values, dense_shape)
 
 
@@ -221,9 +222,9 @@ def _Enter(data, frame_name, is_constant=False, parallel_iterations=10,
   Returns:
     The same tensor as `data`.
   """
-  data = ops.convert_to_tensor_or_indexed_slices(data, as_ref=True)
+  data = ops.internal_convert_to_tensor_or_indexed_slices(data, as_ref=True)
   if isinstance(data, ops.Tensor):
-    if data.dtype.is_ref_dtype and use_ref:
+    if data.dtype._is_ref_dtype and use_ref:  # pylint: disable=protected-access
       result = ref_enter(data, frame_name, is_constant, parallel_iterations,
                          name=name)
     else:
@@ -270,9 +271,9 @@ def exit(data, name=None):
   Returns:
     The same tensor as `data`.
   """
-  data = ops.convert_to_tensor_or_indexed_slices(data, as_ref=True)
+  data = ops.internal_convert_to_tensor_or_indexed_slices(data, as_ref=True)
   if isinstance(data, ops.Tensor):
-    if data.dtype.is_ref_dtype:
+    if data.dtype._is_ref_dtype:  # pylint: disable=protected-access
       return gen_control_flow_ops._ref_exit(data, name)
     else:
       return gen_control_flow_ops._exit(data, name)
@@ -287,7 +288,7 @@ def exit(data, name=None):
         dense_shape = gen_control_flow_ops._exit(dense_shape, name)
       return ops.IndexedSlices(values, indices, dense_shape)
     else:
-      dense_shape = gen_control_flow_ops._exit(data.shape, name)
+      dense_shape = gen_control_flow_ops._exit(data.dense_shape, name)
       return sparse_tensor.SparseTensor(indices, values, dense_shape)
 
 
@@ -311,8 +312,8 @@ def switch(data, pred, dtype=None, name=None):
     to `output_true`, otherwise it goes to `output_false`.
   """
   with ops.name_scope(name, "Switch", [data, pred]) as name:
-    data = ops.convert_to_tensor_or_indexed_slices(data, dtype=dtype,
-                                                   name="data", as_ref=True)
+    data = ops.internal_convert_to_tensor_or_indexed_slices(
+        data, dtype=dtype, name="data", as_ref=True)
     pred = ops.convert_to_tensor(pred, name="pred")
     if isinstance(data, ops.Tensor):
       return gen_control_flow_ops._switch(data, pred, name=name)
@@ -332,7 +333,7 @@ def switch(data, pred, dtype=None, name=None):
         return (ops.IndexedSlices(val_f, ind_f, dense_shape_f),
                 ops.IndexedSlices(val_t, ind_t, dense_shape_t))
       else:
-        dense_shape = data.shape
+        dense_shape = data.dense_shape
         dense_shape_f, dense_shape_t = gen_control_flow_ops._switch(
             data.shape, pred, name="dense_shape")
         return (sparse_tensor.SparseTensor(ind_f, val_f, dense_shape_f),
@@ -378,7 +379,7 @@ def _SwitchRefOrTensor(data, pred, name="Switch"):
   # created within ops.colocate_with(data) to ignore the existing stack.
   with ops.colocate_with(data, ignore_existing=True):
     if isinstance(data, ops.Tensor):
-      if data.dtype.is_ref_dtype:
+      if data.dtype._is_ref_dtype:  # pylint: disable=protected-access
         return ref_switch(data, pred, name=name)
     return switch(data, pred, name=name)
 
@@ -411,10 +412,10 @@ def merge(inputs, name=None):
   if any([inp is None for inp in inputs]):
     raise ValueError("At least one of the merge inputs is None: %s" % inputs)
   with ops.name_scope(name, "Merge", inputs) as name:
-    inputs = [ops.convert_to_tensor_or_indexed_slices(inp, as_ref=True)
+    inputs = [ops.internal_convert_to_tensor_or_indexed_slices(inp, as_ref=True)
               for inp in inputs]
     if all([isinstance(v, ops.Tensor) for v in inputs]):
-      if all([v.dtype.is_ref_dtype for v in inputs]):
+      if all([v.dtype._is_ref_dtype for v in inputs]):  # pylint: disable=protected-access
         return gen_control_flow_ops._ref_merge(inputs, name)
       else:
         return gen_control_flow_ops._merge(inputs, name)
@@ -424,7 +425,7 @@ def merge(inputs, name=None):
       indices, chosen_index = gen_control_flow_ops._merge(
           [inp.indices for inp in inputs], name="indices")
       dense_shape, _ = gen_control_flow_ops._merge(
-          [inp.shape for inp in inputs], name="dense_shape")
+          [inp.dense_shape for inp in inputs], name="dense_shape")
       return (sparse_tensor.SparseTensor(indices, values, dense_shape),
               chosen_index)
     else:
@@ -455,7 +456,7 @@ def _make_tensor_array(ta, t_or_flow):
   new_ta = tensor_array_ops.TensorArray(
       dtype=ta.dtype, handle=ta.handle, flow=t_or_flow,
       infer_shape=ta._infer_shape)
-  new_ta._elem_shape = ta._elem_shape
+  new_ta._element_shape = ta._element_shape  # pylint: disable=protected-access
   return new_ta
 
 
@@ -549,16 +550,16 @@ def _SetShapeInvariants(input_vars, enter_vars, shapes):
         if var.dense_shape is not None:
           var.dense_shape.set_shape(tensor_shape.TensorShape([shape.ndims]))
       else:
-        if not _ShapeLessThanOrEqual(inp.shape.get_shape(), shape):
+        if not _ShapeLessThanOrEqual(inp.dense_shape.get_shape(), shape):
           raise ValueError(
               "The shape invariant specified for %s is not compatible with "
               "the initial shape of the shape tensor of this SparseTensor. "
               "It enters the loop with shape %s, but the specified shape "
               "invariant is %s."
-              % (inp.shape.name, inp.shape.get_shape(), shape))
+              % (inp.dense_shape.name, inp.dense_shape.get_shape(), shape))
         var.values.set_shape(tensor_shape.TensorShape([None]))
         var.indices.set_shape(tensor_shape.TensorShape([None, shape.ndims]))
-        var.shape.set_shape(shape)
+        var.dense_shape.set_shape(shape)
 
 
 def _EnforceShapeInvariant(merge_var, next_var):
@@ -612,10 +613,10 @@ def _EnforceShapeInvariant(merge_var, next_var):
     else:
       m_values_shape = merge_var.values.get_shape()
       m_indices_shape = merge_var.indices.get_shape()
-      m_shape_shape = merge_var.shape.get_shape()
+      m_shape_shape = merge_var.dense_shape.get_shape()
       n_values_shape = next_var.values.get_shape()
       n_indices_shape = next_var.indices.get_shape()
-      n_shape_shape = next_var.shape.get_shape()
+      n_shape_shape = next_var.dense_shape.get_shape()
       if (not _ShapeLessThanOrEqual(n_values_shape, m_values_shape) or
           not _ShapeLessThanOrEqual(n_indices_shape, m_indices_shape) or
           not _ShapeLessThanOrEqual(n_shape_shape, m_shape_shape)):
@@ -653,7 +654,7 @@ def _AddNextAndBackEdge(m, v):
     # pylint: disable=protected-access
     m.values.op._update_input(1, v.values)
     m.indices.op._update_input(1, v.indices)
-    m.shape.op._update_input(1, v.shape)
+    m.dense_shape.op._update_input(1, v.dense_shape)
     # pylint: enable=protected-access
   else:
     raise TypeError("Type %s not supported" % type(m))
@@ -970,7 +971,7 @@ class GradLoopState(object):
     Returns:
       The same tensor obtained from the saved history.
     """
-    assert value.op.type != "Variable"
+    assert value.op.type not in ["Variable", "VariableV2"]
     real_value = self._history_map.get(value.name)
     if real_value is None:
       cur_value = value
@@ -1697,7 +1698,7 @@ class CondContext(ControlFlowContext):
                 dense_shape = self._ProcessOutputTensor(dense_shape)
               real_v = ops.IndexedSlices(values, indices, dense_shape)
             else:
-              dense_shape = self._ProcessOutputTensor(v.shape)
+              dense_shape = self._ProcessOutputTensor(v.dense_shape)
               real_v = sparse_tensor.SparseTensor(indices, values, dense_shape)
           else:
             real_v = self._ProcessOutputTensor(v)
@@ -1747,7 +1748,7 @@ def cond(pred, fn1, fn2, name=None):
     y = tf.constant(5)
     def f1(): return tf.mul(x, 17)
     def f2(): return tf.add(y, 23)
-    r = cond(tf.less(x, y), f1, f2)
+    r = tf.cond(tf.less(x, y), f1, f2)
     # r is set to f1().
     # Operations in f2 (e.g., tf.add) are not executed.
   ```
@@ -2235,7 +2236,9 @@ class WhileContext(ControlFlowContext):
       if self.outer_context: self.outer_context.Exit()
     else:
       value = op.inputs[0]
-      if self.outer_context:
+      if (isinstance(self.outer_context, WhileContext) and
+          self.outer_context.grad_state is not None):
+        # We are in a nested while loop.
         forward_ctxt = self.grad_state.forward_context
         forward_ctxt.outer_context.Enter()
         zeros_shape = array_ops.shape_internal(value, optimize=False)
@@ -2249,8 +2252,10 @@ class WhileContext(ControlFlowContext):
         acc = array_ops.zeros(real_shape, grad.dtype)
         self.outer_context.Exit()
       else:
+        if self.outer_context: self.outer_context.Enter()
         zeros_shape = array_ops.shape_internal(value, optimize=False)
         acc = array_ops.zeros(zeros_shape, grad.dtype)
+        if self.outer_context: self.outer_context.Exit()
       acc._shape = grad.get_shape()  # pylint: disable=protected-access
 
     self.Enter()
@@ -2358,7 +2363,7 @@ class WhileContext(ControlFlowContext):
         if isinstance(x, ops.IndexedSlices):
           dense_shape = x.dense_shape
         elif isinstance(x, sparse_tensor.SparseTensor):
-          dense_shape = x.shape
+          dense_shape = x.dense_shape
         else:
           raise TypeError("Type %s not supported" % type(x))
         if dense_shape is not None:
@@ -2491,7 +2496,7 @@ class WhileContext(ControlFlowContext):
         if not isinstance(e, (ops.IndexedSlices, sparse_tensor.SparseTensor)):
           raise TypeError("Type %s not supported" % type(e))
         xs = [e.values, e.indices]
-        shape = e.dense_shape if isinstance(e, ops.IndexedSlices) else e.shape
+        shape = e.dense_shape
         if shape is not None:
           xs.append(shape)
       for x in xs:
@@ -2543,7 +2548,7 @@ def while_loop(cond, body, loop_vars, shape_invariants=None,
   TensorShape([r]) where r is the rank of the dense tensor represented
   by the sparse tensor. It means the shapes of the three tensors of the
   SparseTensor are ([None], [None, r], [r]). NOTE: The shape invariant here
-  is the shape of the SparseTensor.shape property. It must be the shape of
+  is the shape of the SparseTensor.dense_shape property. It must be the shape of
   a vector.
 
   b) If a loop variable is an IndexedSlices, the shape invariant must be

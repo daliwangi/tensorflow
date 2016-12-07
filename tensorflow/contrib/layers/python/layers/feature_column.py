@@ -162,7 +162,8 @@ class _DeepEmbeddingLookupArguments(
                             "combiner",
                             "dimension",
                             "shared_embedding_name",
-                            "hashed"])):
+                            "hash_key",
+                            "max_norm"])):
   """Represents the information needed from a column for embedding lookup.
 
   Used to to compute DNN inputs and weighted sum.
@@ -455,7 +456,7 @@ class _SparseColumnIntegerized(_SparseColumn):
     sparse_id_values = math_ops.mod(input_tensor.values, self.bucket_size,
                                     name="mod")
     columns_to_tensors[self] = sparse_tensor_py.SparseTensor(
-        input_tensor.indices, sparse_id_values, input_tensor.shape)
+        input_tensor.indices, sparse_id_values, input_tensor.dense_shape)
 
 
 def sparse_column_with_integerized_feature(column_name,
@@ -529,7 +530,7 @@ class _SparseColumnHashed(_SparseColumn):
     sparse_id_values = string_ops.string_to_hash_bucket_fast(
         sparse_values, self.bucket_size, name="lookup")
     columns_to_tensors[self] = sparse_tensor_py.SparseTensor(
-        input_tensor.indices, sparse_id_values, input_tensor.shape)
+        input_tensor.indices, sparse_id_values, input_tensor.dense_shape)
 
 
 def sparse_column_with_hash_bucket(column_name,
@@ -717,7 +718,7 @@ def weighted_sparse_column(sparse_id_column,
         is a SparseTensor.
      Following are assumed to be true:
        * sparse_tensor.indices = weights_tensor.indices
-       * sparse_tensor.shape = weights_tensor.shape
+       * sparse_tensor.dense_shape = weights_tensor.dense_shape
 
   Args:
     sparse_id_column: A `_SparseColumn` which is created by
@@ -822,7 +823,7 @@ class _EmbeddingColumn(_FeatureColumn, collections.namedtuple(
     "_EmbeddingColumn",
     ["sparse_id_column", "dimension", "combiner", "initializer",
      "ckpt_to_load_from", "tensor_name_in_ckpt", "shared_embedding_name",
-     "shared_vocab_size"])):
+     "shared_vocab_size", "max_norm"])):
   """Represents an embedding column.
 
   Args:
@@ -849,6 +850,8 @@ class _EmbeddingColumn(_FeatureColumn, collections.namedtuple(
     shared_embedding_name: (Optional). The common name for shared embedding.
     shared_vocab_size: (Optional). The common vocab_size used for shared
       embedding space.
+    max_norm: (Optional). If not None, embedding values are l2-normalized to
+      the value of max_norm.
 
   Raises:
     ValueError: if `initializer` is specified and is not callable. Also,
@@ -863,7 +866,8 @@ class _EmbeddingColumn(_FeatureColumn, collections.namedtuple(
               ckpt_to_load_from=None,
               tensor_name_in_ckpt=None,
               shared_embedding_name=None,
-              shared_vocab_size=None):
+              shared_vocab_size=None,
+              max_norm=None):
     if initializer is not None and not callable(initializer):
       raise ValueError("initializer must be callable if specified. "
                        "Embedding of column_name: {}".format(
@@ -882,7 +886,8 @@ class _EmbeddingColumn(_FeatureColumn, collections.namedtuple(
                                                 initializer, ckpt_to_load_from,
                                                 tensor_name_in_ckpt,
                                                 shared_embedding_name,
-                                                shared_vocab_size)
+                                                shared_vocab_size,
+                                                max_norm)
 
   @property
   def name(self):
@@ -922,7 +927,8 @@ class _EmbeddingColumn(_FeatureColumn, collections.namedtuple(
         initializer=self.initializer,
         combiner=self.combiner,
         shared_embedding_name=self.shared_embedding_name,
-        hashed=False)
+        hash_key=None,
+        max_norm=self.max_norm)
 
   def _checkpoint_path(self):
     if self.ckpt_to_load_from is not None:
@@ -955,7 +961,8 @@ def embedding_column(sparse_id_column,
                      combiner=None,
                      initializer=None,
                      ckpt_to_load_from=None,
-                     tensor_name_in_ckpt=None):
+                     tensor_name_in_ckpt=None,
+                     max_norm=None):
   """Creates an `_EmbeddingColumn` for feeding sparse data into a DNN.
 
   Args:
@@ -980,6 +987,8 @@ def embedding_column(sparse_id_column,
     tensor_name_in_ckpt: (Optional). Name of the `Tensor` in the provided
       checkpoint from which to restore the column weights. Required if
       `ckpt_to_load_from` is not None.
+    max_norm: (Optional). If not None, embedding values are l2-normalized to
+      the value of max_norm.
 
   Returns:
     An `_EmbeddingColumn`.
@@ -989,7 +998,8 @@ def embedding_column(sparse_id_column,
                  "to \"sqrtn\" after 2016/11/01.")
     combiner = "mean"
   return _EmbeddingColumn(sparse_id_column, dimension, combiner, initializer,
-                          ckpt_to_load_from, tensor_name_in_ckpt)
+                          ckpt_to_load_from, tensor_name_in_ckpt,
+                          max_norm=max_norm)
 
 
 def shared_embedding_columns(sparse_id_columns,
@@ -998,7 +1008,8 @@ def shared_embedding_columns(sparse_id_columns,
                              shared_embedding_name=None,
                              initializer=None,
                              ckpt_to_load_from=None,
-                             tensor_name_in_ckpt=None):
+                             tensor_name_in_ckpt=None,
+                             max_norm=None):
   """Creates a list of `_EmbeddingColumn` sharing the same embedding.
 
   Args:
@@ -1026,6 +1037,8 @@ def shared_embedding_columns(sparse_id_columns,
     tensor_name_in_ckpt: (Optional). Name of the `Tensor` in the provided
       checkpoint from which to restore the column weights. Required if
       `ckpt_to_load_from` is not None.
+    max_norm: (Optional). If not None, embedding values are l2-normalized to
+      the value of max_norm.
 
   Returns:
     A tuple of `_EmbeddingColumn` with shared embedding space.
@@ -1057,7 +1070,7 @@ def shared_embedding_columns(sparse_id_columns,
     return [
         _EmbeddingColumn(sparse_id_columns[0], dimension, combiner, initializer,
                          ckpt_to_load_from, tensor_name_in_ckpt,
-                         shared_embedding_name)]
+                         shared_embedding_name, max_norm=max_norm)]
   else:
     # check compatibility of sparse_id_columns
     compatible = True
@@ -1086,19 +1099,24 @@ def shared_embedding_columns(sparse_id_columns,
       embedded_columns.append(
           _EmbeddingColumn(column, dimension, combiner, initializer,
                            ckpt_to_load_from, tensor_name_in_ckpt,
-                           shared_embedding_name, shared_vocab_size))
+                           shared_embedding_name, shared_vocab_size,
+                           max_norm=max_norm))
     return tuple(embedded_columns)
 
 
-class _HashedEmbeddingColumn(collections.namedtuple(
-    "_HashedEmbeddingColumn", ["column_name", "size", "dimension", "combiner",
-                               "initializer"]), _EmbeddingColumn):
-  """See `hashed_embedding_column`."""
+class _ScatteredEmbeddingColumn(
+    collections.namedtuple(
+        "_ScatteredEmbeddingColumn",
+        ["column_name", "size", "dimension", "hash_key", "combiner",
+         "initializer"]),
+    _EmbeddingColumn):
+  """See `scattered_embedding_column`."""
 
   def __new__(cls,
               column_name,
               size,
               dimension,
+              hash_key,
               combiner="sqrtn",
               initializer=None):
     if initializer is not None and not callable(initializer):
@@ -1109,13 +1127,14 @@ class _HashedEmbeddingColumn(collections.namedtuple(
       # TODO(b/25671353): Better initial value?
       initializer = init_ops.truncated_normal_initializer(
           mean=0.0, stddev=stddev)
-    return super(_HashedEmbeddingColumn, cls).__new__(cls, column_name, size,
-                                                      dimension, combiner,
-                                                      initializer)
+    return super(_ScatteredEmbeddingColumn, cls).__new__(cls, column_name, size,
+                                                         dimension, hash_key,
+                                                         combiner,
+                                                         initializer)
 
   @property
   def name(self):
-    return "{}_hashed_embedding".format(self.column_name)
+    return "{}_scattered_embedding".format(self.column_name)
 
   @property
   def config(self):
@@ -1133,23 +1152,40 @@ class _HashedEmbeddingColumn(collections.namedtuple(
         combiner=self.combiner,
         dimension=self.dimension,
         shared_embedding_name=None,
-        hashed=True)
+        hash_key=self.hash_key,
+        max_norm=None)
 
 
-def hashed_embedding_column(column_name,
-                            size,
-                            dimension,
-                            combiner=None,
-                            initializer=None):
+def scattered_embedding_column(column_name,
+                               size,
+                               dimension,
+                               hash_key,
+                               combiner=None,
+                               initializer=None):
   """Creates an embedding column of a sparse feature using parameter hashing.
 
   The i-th embedding component of a value v is found by retrieving an
   embedding weight whose index is a fingerprint of the pair (v,i).
 
+  An embedding column with sparse_column_with_hash_bucket such as
+    embedding_column(
+        sparse_column_with_hash_bucket(column_name, bucket_size),
+        dimension)
+
+  could be replaced by
+    scattered_embedding_column(
+        column_name, size=bucket_size * dimension, dimension=dimension,
+        hash_key=tf.contrib.layers.SPARSE_FEATURE_CROSS_DEFAULT_HASH_KEY)
+
+  for the same number of embedding parameters and hopefully reduced impact of
+  collisions with a cost of slowing down training.
+
   Args:
     column_name: A string defining sparse column name.
     size: An integer specifying the number of parameters in the embedding layer.
     dimension: An integer specifying dimension of the embedding.
+    hash_key: Specify the hash_key that will be used by the `FingerprintCat64`
+      function to combine the crosses fingerprints on SparseFeatureCrossOp.
     combiner: A string specifying how to reduce if there are multiple entries
       in a single row. Currently "mean", "sqrtn" and "sum" are supported. Each
       of this can be thought as example level normalizations on the column:
@@ -1162,7 +1198,7 @@ def hashed_embedding_column(column_name,
       `tf.truncated_normal_initializer` with mean 0 and standard deviation 0.1.
 
   Returns:
-    A _HashedEmbeddingColumn.
+    A _ScatteredEmbeddingColumn.
 
   Raises:
     ValueError: if dimension or size is not a positive integer; or if combiner
@@ -1183,8 +1219,8 @@ def hashed_embedding_column(column_name,
                      "combiner: {}, column_name: {}".format(combiner,
                                                             column_name))
 
-  return _HashedEmbeddingColumn(column_name, size, dimension, combiner,
-                                initializer)
+  return _ScatteredEmbeddingColumn(column_name, size, dimension, hash_key,
+                                   combiner, initializer)
 
 
 def _reshape_real_valued_tensor(input_tensor, output_rank, column_name=None):

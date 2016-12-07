@@ -112,12 +112,6 @@ def assert_negative(x, data=None, summarize=None, message=None, name=None):
     output = tf.reduce_sum(x)
   ```
 
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_negative(x)], x)
-  ```
-
   Negative means, for every element `x[i]` of `x`, we have `x[i] < 0`.
   If `x` is empty this is trivially satisfied.
 
@@ -152,12 +146,6 @@ def assert_positive(x, data=None, summarize=None, message=None, name=None):
     output = tf.reduce_sum(x)
   ```
 
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_positive(x)], x)
-  ```
-
   Positive means, for every element `x[i]` of `x`, we have `x[i] > 0`.
   If `x` is empty this is trivially satisfied.
 
@@ -190,12 +178,6 @@ def assert_non_negative(x, data=None, summarize=None, message=None, name=None):
   ```python
   with tf.control_dependencies([tf.assert_non_negative(x)]):
     output = tf.reduce_sum(x)
-  ```
-
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_non_negative(x)], x)
   ```
 
   Non-negative means, for every element `x[i]` of `x`, we have `x[i] >= 0`.
@@ -234,12 +216,6 @@ def assert_non_positive(x, data=None, summarize=None, message=None, name=None):
     output = tf.reduce_sum(x)
   ```
 
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_non_positive(x)], x)
-  ```
-
   Non-positive means, for every element `x[i]` of `x`, we have `x[i] <= 0`.
   If `x` is empty this is trivially satisfied.
 
@@ -274,12 +250,6 @@ def assert_equal(x, y, data=None, summarize=None, message=None, name=None):
   ```python
   with tf.control_dependencies([tf.assert_equal(x, y)]):
     output = tf.reduce_sum(x)
-  ```
-
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_equal(x, y)], x)
   ```
 
   This condition holds if for every pair of (possibly broadcast) elements
@@ -322,12 +292,6 @@ def assert_less(x, y, data=None, summarize=None, message=None, name=None):
     output = tf.reduce_sum(x)
   ```
 
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_less(x, y)], x)
-  ```
-
   This condition holds if for every pair of (possibly broadcast) elements
   `x[i]`, `y[i]`, we have `x[i] < y[i]`.
   If both `x` and `y` are empty, this is trivially satisfied.
@@ -366,12 +330,6 @@ def assert_less_equal(x, y, data=None, summarize=None, message=None, name=None):
   ```python
   with tf.control_dependencies([tf.assert_less_equal(x, y)]):
     output = tf.reduce_sum(x)
-  ```
-
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_less_equal(x, y)], x)
   ```
 
   This condition holds if for every pair of (possibly broadcast) elements
@@ -414,12 +372,6 @@ def assert_greater(x, y, data=None, summarize=None, message=None, name=None):
     output = tf.reduce_sum(x)
   ```
 
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_greater(x, y)], x)
-  ```
-
   This condition holds if for every pair of (possibly broadcast) elements
   `x[i]`, `y[i]`, we have `x[i] > y[i]`.
   If both `x` and `y` are empty, this is trivially satisfied.
@@ -459,12 +411,6 @@ def assert_greater_equal(x, y, data=None, summarize=None, message=None,
   ```python
   with tf.control_dependencies([tf.assert_greater_equal(x, y)]):
     output = tf.reduce_sum(x)
-  ```
-
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_greater_equal(x, y)], x)
   ```
 
   This condition holds if for every pair of (possibly broadcast) elements
@@ -557,12 +503,6 @@ def assert_rank(x, rank, data=None, summarize=None, message=None, name=None):
     output = tf.reduce_sum(x)
   ```
 
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_rank(x, 2)], x)
-  ```
-
   Args:
     x:  Numeric `Tensor`.
     rank:  Scalar integer `Tensor`.
@@ -618,12 +558,6 @@ def assert_rank_at_least(
   ```python
   with tf.control_dependencies([tf.assert_rank_at_least(x, 2)]):
     output = tf.reduce_sum(x)
-  ```
-
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_rank_at_least(x, 2)], x)
   ```
 
   Args:
@@ -682,12 +616,6 @@ def assert_integer(x, message=None, name=None):
     output = tf.reduce_sum(x)
   ```
 
-  Example of adding dependency to the tensor being checked:
-
-  ```python
-  x = tf.with_dependencies([tf.assert_integer(x)], x)
-  ```
-
   Args:
     x: `Tensor` whose basetype is integer and is not quantized.
     message: A string to prefix to the default message.
@@ -737,6 +665,7 @@ def assert_type(tensor, tf_type, message=None, name=None):
     return control_flow_ops.no_op('statically_determined_correct_type')
 
 
+# pylint: disable=line-too-long
 def _get_diff_for_monotonic_comparison(x):
   """Gets the difference x[1:] - x[:-1]."""
   x = array_ops.reshape(x, [-1])
@@ -749,7 +678,7 @@ def _get_diff_for_monotonic_comparison(x):
 
   # With 2 or more elements, return x[1:] - x[:-1]
   s_len = array_ops.shape(x) - 1
-  diff = lambda: array_ops.slice(x, [1], s_len) - array_ops.slice(x, [0], s_len)
+  diff = lambda: array_ops.strided_slice(x, [1], [1] + s_len)- array_ops.strided_slice(x, [0], s_len)
   return control_flow_ops.cond(is_shorter_than_two, short_result, diff)
 
 

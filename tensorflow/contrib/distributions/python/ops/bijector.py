@@ -75,11 +75,22 @@ __all__ = [
     "Identity",
     "Inline",
     "Invert",
+    "PowerTransform",
     "ScaleAndShift",
     "SigmoidCentered",
     "SoftmaxCentered",
     "Softplus",
 ]
+
+
+# TODO(jvdillon): deprecate this function once tf.expm1 exists.
+def _expm1(x):
+  """Approximate exp{y}-1~=y  for small |y|, and exp{y}-1 elsewhere."""
+  # Recall, eps is smallest positive number such that 1 + eps != 1.
+  eps = np.finfo(x.dtype.base_dtype.as_numpy_dtype).eps
+  # Note we are careful to never send an NaN through ANY branch of where.
+  return array_ops.where(math_ops.less(math_ops.abs(x), eps),
+                         x, math_ops.exp(x) - 1.)
 
 
 class _Mapping(collections.namedtuple("_Mapping",
@@ -135,7 +146,7 @@ class _Mapping(collections.namedtuple("_Mapping",
     if mapping is None:
       mapping = _Mapping(x=x, y=y, ildj=ildj,
                          condition_kwargs=condition_kwargs)
-    elif not all([arg is None for arg in [x, y, ildj, condition_kwargs]]):
+    elif not all(arg is None for arg in [x, y, ildj, condition_kwargs]):
       raise ValueError("Cannot specify mapping and individual args.")
     return _Mapping(
         x=self._merge(self.x, mapping.x),
@@ -236,6 +247,25 @@ class Bijector(object):
         prob(Y=y) = |Jacobian(g^{-1})(y)| * prob(X=g^{-1}(y))
                   = (1 / y) Normal(log(y); 0, 1)
       ```
+
+      Here is an example of how one might implement the `Exp` bijector:
+
+      ```
+        class Exp(Bijector):
+          def __init__(self, event_ndims=0, validate_args=False, name="exp"):
+            super(Exp, self).__init__(batch_ndims=0, event_ndims=event_ndims,
+                                      validate_args=validate_args, name=name)
+          def _forward(self, x):
+            return math_ops.exp(x)
+          def _inverse_and_inverse_log_det_jacobian(self, y):
+            x = math_ops.log(y)
+            return x, -self._forward_log_det_jacobian(x)
+          def _forward_log_det_jacobian(self, x):
+            if self.shaper is None:
+              raise ValueError("Jacobian requires known event_ndims.")
+            _, _, event_dims = self.shaper.get_dims(x)
+            return math_ops.reduce_sum(x, reduction_indices=event_dims)
+        ```
 
     - "ScaleAndShift"
 
@@ -599,12 +629,12 @@ class Bijector(object):
         try:
           x, ildj = self._inverse_and_inverse_log_det_jacobian(
               y, **condition_kwargs)
-          if self._constant_ildj is not None:
-            ildj = self._constant_ildj  # Use the "global" result.
-          elif self.is_constant_jacobian:
-            self._constant_ildj = ildj
         except NotImplementedError:
           raise original_error
+        if self._constant_ildj is not None:
+          ildj = self._constant_ildj  # Use the "global" result.
+        elif self.is_constant_jacobian:
+          self._constant_ildj = ildj
       x = x if mapping.x is None else mapping.x
       mapping = mapping.merge(x=x, ildj=ildj)
       self._cache(mapping)
@@ -653,10 +683,10 @@ class Bijector(object):
         try:
           x, ildj = self._inverse_and_inverse_log_det_jacobian(
               y, **condition_kwargs)
-          if mapping.x is not None:
-            x = mapping.x
         except NotImplementedError:
           raise original_error
+        if mapping.x is not None:
+          x = mapping.x
       if self.is_constant_jacobian:
         self._constant_ildj = ildj
       x = x if mapping.x is None else mapping.x
@@ -706,6 +736,7 @@ class Bijector(object):
         # to see if we can separately use _inverse and
         # _inverse_log_det_jacobian members.
         try:
+          # We want this same try/except to catch either NotImplementedError.
           x = self._inverse(y, **condition_kwargs)
           if self._constant_ildj is None:
             ildj = self._inverse_log_det_jacobian(y, **condition_kwargs)
@@ -715,6 +746,9 @@ class Bijector(object):
         ildj = self._constant_ildj  # Ignore any ildj we may/not have.
       elif self.is_constant_jacobian:
         self._constant_ildj = ildj
+      # We use the mapped version of x, even if we re-computed x above with a
+      # call to self._inverse_and_inverse_log_det_jacobian.  This prevents
+      # re-evaluation of the inverse in a common case.
       x = x if mapping.x is None else mapping.x
       mapping = mapping.merge(x=x, ildj=ildj)
       self._cache(mapping)
@@ -757,6 +791,7 @@ class Bijector(object):
         ildj = -self._forward_log_det_jacobian(x, **condition_kwargs)
       except NotImplementedError as original_error:
         try:
+          # We want this same try/except to catch either NotImplementedError.
           y = self.inverse(x, **condition_kwargs) if y is None else y
           ildj = self.inverse_log_det_jacobian(y, **condition_kwargs)
         except NotImplementedError:
@@ -791,8 +826,9 @@ class Bijector(object):
     # which is not None.
     mapping = mapping.merge(mapping=self._lookup(
         mapping.x, mapping.y, mapping.condition_kwargs))
-    if mapping.x is None or mapping.y is None:
-      ValueError("Caching expects both (x,y) to be known, i.e., not None.")
+    if mapping.x is None and mapping.y is None:
+      raise ValueError("Caching expects at least one of (x,y) to be known, "
+                       "i.e., not None.")
     self._from_x[mapping.x_key] = mapping
     self._from_y[mapping.y_key] = mapping
 
@@ -1059,12 +1095,13 @@ class Chain(Bijector):
     else:
       dtype = None
 
+    parameters = {}
+    for b in bijectors:
+      parameters.update(("{}={}".format(b.name, k), v)
+                        for k, v in b.parameters.items())
     super(Chain, self).__init__(
-        parameters=dict(("=".join([b.name, k]), v)
-                        for b in bijectors
-                        for k, v in b.parameters.items()),
-        is_constant_jacobian=all([b.is_constant_jacobian
-                                  for b in bijectors]),
+        parameters=parameters,
+        is_constant_jacobian=all(b.is_constant_jacobian for b in bijectors),
         validate_args=validate_args,
         dtype=dtype,
         name=name or ("identity" if not bijectors else
@@ -1158,7 +1195,109 @@ class Identity(Bijector):
     return constant_op.constant(0., dtype=x.dtype)
 
 
-class Exp(Bijector):
+class PowerTransform(Bijector):
+  """Bijector which computes `Y = g(X) = (1 + X * c)**(1 / c), X >= -1 / c`.
+
+  The [power transform](https://en.wikipedia.org/wiki/Power_transform) maps
+  inputs from `[0, inf]` to `[-1/c, inf]`; this is equivalent to the `inverse`
+  of this bijector.
+
+  This bijector is equivalent to the `Exp` bijector when `c=0`.
+  """
+
+  def __init__(self,
+               power=0.,
+               event_ndims=0,
+               validate_args=False,
+               name="power_transform"):
+    """Instantiates the `PowerTransform` bijector.
+
+    Args:
+      power: Python `float` scalar indicating the transform power, i.e.,
+        `Y = g(X) = (1 + X * c)**(1 / c)` where `c` is the `power`.
+      event_ndims: Python scalar indicating the number of dimensions associated
+        with a particular draw from the distribution.
+      validate_args: `Boolean` indicating whether arguments should be checked
+        for correctness.
+      name: `String` name given to ops managed by this object.
+
+    Raises:
+      ValueError: if `power < 0` or is not known statically.
+    """
+    self._parameters = {}
+    self._name = name
+    self._validate_args = validate_args
+    with self._name_scope("init", values=[power]):
+      power = tensor_util.constant_value(
+          ops.convert_to_tensor(power, name="power"))
+    if power is None or power < 0:
+      raise ValueError("`power` must be a non-negative TF constant.")
+    self._power = power
+    super(PowerTransform, self).__init__(
+        batch_ndims=0,
+        event_ndims=event_ndims,
+        validate_args=validate_args,
+        name=name)
+
+  @property
+  def power(self):
+    """The `c` in: `Y = g(X) = (1 + X * c)**(1 / c)`."""
+    return self._power
+
+  def _forward(self, x):
+    x = self._maybe_assert_valid_x(x)
+    if self.power == 0.:
+      return math_ops.exp(x)
+    # TODO(jvdillon): If large x accuracy is an issue, consider using
+    # (1. + x * self.power)**(1. / self.power) when x >> 1.
+    return math_ops.exp(math_ops.log1p(x * self.power) / self.power)
+
+  def _inverse_and_inverse_log_det_jacobian(self, y):
+    y = self._maybe_assert_valid_y(y)
+    if self.shaper is None:
+      raise ValueError("Jacobian cannot be computed with unknown event_ndims")
+    _, _, event_dims = self.shaper.get_dims(y)
+    if self.power == 0.:
+      x = math_ops.log(y)
+      ildj = -math_ops.reduce_sum(x, reduction_indices=event_dims)
+      return x, ildj
+    # TODO(jvdillon): If large y accuracy is an issue, consider using
+    # (y**self.power - 1.) / self.power when y >> 1.
+    x = _expm1(math_ops.log(y) * self.power) / self.power
+    ildj = (self.power - 1.) * math_ops.reduce_sum(
+        math_ops.log(y),
+        reduction_indices=event_dims)
+    return x, ildj
+
+  def _forward_log_det_jacobian(self, x):
+    x = self._maybe_assert_valid_x(x)
+    if self.shaper is None:
+      raise ValueError("Jacobian cannot be computed with unknown event_ndims")
+    _, _, event_dims = self.shaper.get_dims(x)
+    if self.power == 0.:
+      return math_ops.reduce_sum(x, reduction_indices=event_dims)
+    return (1. / self.power - 1.) * math_ops.reduce_sum(
+        math_ops.log1p(x * self.power),
+        reduction_indices=event_dims)
+
+  def _maybe_assert_valid_x(self, x):
+    if not self.validate_args or self.power == 0.:
+      return x
+    is_valid = check_ops.assert_non_negative(
+        1. + self.power * x,
+        message="Forward transformation input must be at least {}.".format(
+            -1. / self.power))
+    return control_flow_ops.with_dependencies([is_valid], x)
+
+  def _maybe_assert_valid_y(self, y):
+    if not self.validate_args:
+      return y
+    is_valid = check_ops.assert_positive(
+        y, message="Inverse transformation input must be greater than 0.")
+    return control_flow_ops.with_dependencies([is_valid], y)
+
+
+class Exp(PowerTransform):
   """Bijector which computes Y = g(X) = exp(X).
 
     Example Use:
@@ -1192,25 +1331,10 @@ class Exp(Bijector):
         for correctness.
       name: `String` name given to ops managed by this object.
     """
-
     super(Exp, self).__init__(
-        batch_ndims=0,
         event_ndims=event_ndims,
         validate_args=validate_args,
         name=name)
-
-  def _forward(self, x):
-    return math_ops.exp(x)
-
-  def _inverse_and_inverse_log_det_jacobian(self, y):
-    x = math_ops.log(y)
-    return x, -self._forward_log_det_jacobian(x)
-
-  def _forward_log_det_jacobian(self, x):
-    if self.shaper is None:
-      raise ValueError("Jacobian cannot be computed with unknown event_ndims")
-    _, _, event_dims = self.shaper.get_dims(x)
-    return math_ops.reduce_sum(x, reduction_indices=event_dims)
 
 
 class ScaleAndShift(Bijector):
@@ -1348,7 +1472,7 @@ class ScaleAndShift(Bijector):
       batch_ndims: `Tensor` (0D, `int32`).  The ndims of the `batch` portion.
     """
     ndims = array_ops.rank(scale)
-    left = math_ops.select(
+    left = array_ops.where(
         math_ops.reduce_any([
             math_ops.reduce_all([
                 math_ops.equal(ndims, 0),
@@ -1358,7 +1482,7 @@ class ScaleAndShift(Bijector):
                 math_ops.equal(ndims, 2),
                 math_ops.equal(event_ndims, 1)
             ])]), 1, 0)
-    right = math_ops.select(math_ops.equal(event_ndims, 0), 2, 0)
+    right = array_ops.where(math_ops.equal(event_ndims, 0), 2, 0)
     pad = array_ops.concat(0, (
         array_ops.ones([left], dtype=dtypes.int32),
         array_ops.shape(scale),
@@ -1394,7 +1518,7 @@ class ScaleAndShift(Bijector):
 
   def _forward(self, x):
     x, sample_shape = self.shaper.make_batch_of_event_sample_matrices(x)
-    x = math_ops.batch_matmul(self.scale, x)
+    x = math_ops.matmul(self.scale, x)
     x = self.shaper.undo_make_batch_of_event_sample_matrices(x, sample_shape)
     x += self.shift
     return x
@@ -1455,24 +1579,27 @@ class Softplus(Bijector):
     return nn_ops.softplus(x)
 
   def _inverse_and_inverse_log_det_jacobian(self, y):
-    # The most stable inverse of softplus is not the most direct one.
+    # The most stable inverse of softplus is not the most obvious one.
     # y = softplus(x) = Log[1 + exp{x}], (which means y > 0).
-    # ==> exp{y} = 1 + exp{x}
-    # ==> x = Log[exp{y} - 1]
+    # ==> exp{y} = 1 + exp{x}                                (1)
+    # ==> x = Log[exp{y} - 1]                                (2)
     #       = Log[(exp{y} - 1) / exp{y}] + Log[exp{y}]
     #       = Log[(1 - exp{-y}) / 1] + Log[exp{y}]
-    #       = Log[1 - exp{-y}] + y
-    # Recalling y > 0, you see that this is more stable than Log[exp{y} - 1].
+    #       = Log[1 - exp{-y}] + y                           (3)
+    # (2) is the "obvious" inverse, but (3) is more stable than (2) for large y.
+    # For small y (e.g. y = 1e-10), (3) will become -inf since 1 - exp{-y} will
+    # be zero.  To fix this, we use 1 - exp{-y} approx y for small y > 0.
     #
     # Stable inverse log det jacobian.
     # Y = Log[1 + exp{X}] ==> X = Log[exp{Y} - 1]
     # ==> dX/dY = exp{Y} / (exp{Y} - 1)
     #           = 1 / (1 - exp{-Y}),
-    # which is the most stable for Y > 0.
+    # which is the most stable for large Y > 0.  For small Y, we use
+    # 1 - exp{-Y} approx Y.
     if self.shaper is None:
       raise ValueError("Jacobian cannot be computed with unknown event_ndims")
     _, _, event_dims = self.shaper.get_dims(y)
-    log_one_minus_exp_neg = math_ops.log(1. - math_ops.exp(-y))
+    log_one_minus_exp_neg = math_ops.log(-_expm1(-y))
     x = y + log_one_minus_exp_neg
     ildj = -math_ops.reduce_sum(
         log_one_minus_exp_neg, reduction_indices=event_dims)
@@ -1630,12 +1757,12 @@ class SoftmaxCentered(Bijector):
                               on_value=shape[-1]-np.array(1, dtype=shape.dtype),
                               dtype=shape.dtype)
     size = array_ops.concat(0, (shape[:-1], np.asarray([1], dtype=shape.dtype)))
-    log_normalization = -array_ops.slice(x, begin, size)
+    log_normalization = -array_ops.strided_slice(x, begin, begin + size)
 
     # Here we slice out all but the last coordinate; see above for idea.
     begin = array_ops.zeros_like(shape)
     size = array_ops.concat(0, (shape[:-1], [shape[-1]-1]))
-    x = array_ops.slice(x, begin, size)
+    x = array_ops.strided_slice(x, begin, begin + size)
 
     x += log_normalization
 
@@ -1764,7 +1891,7 @@ class CholeskyOuterProduct(Bijector):
       x = control_flow_ops.with_dependencies([is_matrix, is_square], x)
     # For safety, explicitly zero-out the upper triangular part.
     x = array_ops.matrix_band_part(x, -1, 0)
-    return math_ops.batch_matmul(x, x, adj_y=True)
+    return math_ops.matmul(x, x, adjoint_b=True)
 
   def _inverse_and_inverse_log_det_jacobian(self, y):
     x = (math_ops.sqrt(y) if self._static_event_ndims == 0
@@ -1843,8 +1970,7 @@ class CholeskyOuterProduct(Bijector):
         dim=1)
 
     sum_weighted_log_diag = array_ops.squeeze(
-        math_ops.batch_matmul(math_ops.log(diag), exponents),
-        squeeze_dims=-1)
+        math_ops.matmul(math_ops.log(diag), exponents), squeeze_dims=-1)
     fldj = p * math.log(2.) + sum_weighted_log_diag
 
     if x.get_shape().ndims is not None:

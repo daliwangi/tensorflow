@@ -54,6 +54,7 @@ or join multiple tensors together.
 @@tile
 @@pad
 @@concat
+@@concat_v2
 @@stack
 @@pack
 @@unstack
@@ -102,7 +103,6 @@ import sys
 import numpy as np
 import six
 
-from tensorflow.python.framework import common_shapes
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -116,6 +116,7 @@ from tensorflow.python.ops import gen_math_ops
 # go/tf-wildcard-import
 # pylint: disable=wildcard-import
 from tensorflow.python.ops.gen_array_ops import *
+from tensorflow.python.util import deprecation
 from tensorflow.python.util.deprecation import deprecated
 # pylint: enable=wildcard-import
 
@@ -130,13 +131,59 @@ _baseslice = slice
 
 # pylint: disable=redefined-builtin,protected-access
 def expand_dims(input, axis=None, name=None, dim=None):
+  """Inserts a dimension of 1 into a tensor's shape.
+
+  Given a tensor `input`, this operation inserts a dimension of 1 at the
+  dimension index `axis` of `input`'s shape. The dimension index `axis` starts
+  at zero; if you specify a negative number for `axis` it is counted backward
+  from the end.
+
+  This operation is useful if you want to add a batch dimension to a single
+  element. For example, if you have a single image of shape `[height, width,
+  channels]`, you can make it a batch of 1 image with `expand_dims(image, 0)`,
+  which will make the shape `[1, height, width, channels]`.
+
+  Other examples:
+
+  ```python
+  # 't' is a tensor of shape [2]
+  shape(expand_dims(t, 0)) ==> [1, 2]
+  shape(expand_dims(t, 1)) ==> [2, 1]
+  shape(expand_dims(t, -1)) ==> [2, 1]
+
+  # 't2' is a tensor of shape [2, 3, 5]
+  shape(expand_dims(t2, 0)) ==> [1, 2, 3, 5]
+  shape(expand_dims(t2, 2)) ==> [2, 3, 1, 5]
+  shape(expand_dims(t2, 3)) ==> [2, 3, 5, 1]
+  ```
+
+  This operation requires that:
+
+  `-1-input.dims() <= dim <= input.dims()`
+
+  This operation is related to `squeeze()`, which removes dimensions of
+  size 1.
+
+  Args:
+    input: A `Tensor`.
+    axis: 0-D (scalar). Specifies the dimension index at which to
+      expand the shape of `input`.
+    name: The name of the output `Tensor`.
+    dim: 0-D (scalar). Equivalent to `axis`, to be deprecated.
+
+  Returns:
+    A `Tensor` with the same data as `input`, but its shape has an additional
+    dimension of size 1 added.
+
+  Raises:
+    ValueError: if both `dim` and `axis` are specified.
+  """
   # TODO(aselle): Remove argument dim
   if dim is not None:
     if axis is not None:
       raise ValueError("can't specify both 'dim' and 'axis'")
     axis = dim
   return gen_array_ops._expand_dims(input, axis, name)
-expand_dims.__doc__ = gen_array_ops._expand_dims.__doc__.replace("dim", "axis")
 # pylint: enable=redefined-builtin,protected-access
 
 
@@ -202,7 +249,7 @@ def shape_internal(input, name=None, optimize=True, out_type=dtypes.int32):
   with ops.name_scope(name, "Shape", [input]) as name:
     if isinstance(
         input, (sparse_tensor.SparseTensor, sparse_tensor.SparseTensorValue)):
-      return gen_math_ops.cast(input.shape, out_type)
+      return gen_math_ops.cast(input.dense_shape, out_type)
     else:
       input_tensor = ops.convert_to_tensor(input)
       input_shape = input_tensor.get_shape()
@@ -255,7 +302,7 @@ def size_internal(input, name=None, optimize=True, out_type=dtypes.int32):
     if isinstance(
         input, (sparse_tensor.SparseTensor, sparse_tensor.SparseTensorValue)):
       return gen_math_ops._prod(
-          gen_math_ops.cast(input.shape, out_type), 0, name=name)
+          gen_math_ops.cast(input.dense_shape, out_type), 0, name=name)
     else:
       input_tensor = ops.convert_to_tensor(input)
       input_shape = input_tensor.get_shape()
@@ -288,6 +335,10 @@ def rank(input, name=None):
 
   Returns:
     A `Tensor` of type `int32`.
+
+  @compatibility(numpy)
+  Equivalent to np.ndim
+  @end_compatibility
   """
   return rank_internal(input, name, optimize=True)
 
@@ -307,7 +358,7 @@ def rank_internal(input, name=None, optimize=True):
   with ops.name_scope(name, "Rank", [input]) as name:
     if isinstance(
         input, (sparse_tensor.SparseTensor, sparse_tensor.SparseTensorValue)):
-      return gen_array_ops.size(input.shape, name=name)
+      return gen_array_ops.size(input.dense_shape, name=name)
     else:
       input_tensor = ops.convert_to_tensor(input)
       input_shape = input_tensor.get_shape()
@@ -484,7 +535,7 @@ def slice(input_, begin, size, name=None):
 def strided_slice(input_,
                   begin,
                   end,
-                  strides,
+                  strides=None,
                   begin_mask=0,
                   end_mask=0,
                   ellipsis_mask=0,
@@ -550,11 +601,11 @@ def strided_slice(input_,
   # 'input' is [[[1, 1, 1], [2, 2, 2]],
   #             [[3, 3, 3], [4, 4, 4]],
   #             [[5, 5, 5], [6, 6, 6]]]
-  tf.slice(input, [1, 0, 0], [2, 1, 3], [1, 1, 1]) ==> [[[3, 3, 3]]]
-  tf.slice(input, [1, 0, 0], [2, 2, 3], [1, 1, 1]) ==> [[[3, 3, 3],
-                                                         [4, 4, 4]]]
-  tf.slice(input, [1, 1, 0], [2, -1, 3], [1, -1, 1]) ==>[[[4, 4, 4],
-                                                          [3, 3, 3]]]
+  tf.strided_slice(input, [1, 0, 0], [2, 1, 3], [1, 1, 1]) ==> [[[3, 3, 3]]]
+  tf.strided_slice(input, [1, 0, 0], [2, 2, 3], [1, 1, 1]) ==> [[[3, 3, 3],
+                                                                 [4, 4, 4]]]
+  tf.strided_slice(input, [1, 1, 0], [2, -1, 3], [1, -1, 1]) ==>[[[4, 4, 4],
+                                                                  [3, 3, 3]]]
   ```
 
   Args:
@@ -573,6 +624,10 @@ def strided_slice(input_,
   Returns:
     A `Tensor` the same type as `input`.
   """
+
+  if strides is None:
+    strides = ones_like(begin)
+
   op = gen_array_ops.strided_slice(
       input=input_,
       begin=begin,
@@ -929,6 +984,83 @@ def unpack(value, num=None, axis=0, name="unpack"):
   return unstack(value, num, axis, name)
 
 
+def concat_v2(values, axis, name="concat_v2"):
+  """Concatenates tensors along one dimension.
+
+  Concatenates the list of tensors `values` along dimension `axis`.  If
+  `values[i].shape = [D0, D1, ... Daxis(i), ...Dn]`, the concatenated
+  result has shape
+
+      [D0, D1, ... Raxis, ...Dn]
+
+  where
+
+      Raxis = sum(Daxis(i))
+
+  That is, the data from the input tensors is joined along the `axis`
+  dimension.
+
+  The number of dimensions of the input tensors must match, and all dimensions
+  except `axis` must be equal.
+
+  For example:
+
+  ```python
+  t1 = [[1, 2, 3], [4, 5, 6]]
+  t2 = [[7, 8, 9], [10, 11, 12]]
+  tf.concat_v2([t1, t2], 0) ==> [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+  tf.concat_v2([t1, t2], 1) ==> [[1, 2, 3, 7, 8, 9], [4, 5, 6, 10, 11, 12]]
+
+  # tensor t3 with shape [2, 3]
+  # tensor t4 with shape [2, 3]
+  tf.shape(tf.concat_v2([t3, t4], 0)) ==> [4, 3]
+  tf.shape(tf.concat_v2([t3, t4], 1)) ==> [2, 6]
+  ```
+
+  Note: If you are concatenating along a new axis consider using pack.
+  E.g.
+
+  ```python
+  tf.concat(axis, [tf.expand_dims(t, axis) for t in tensors])
+  ```
+
+  can be rewritten as
+
+  ```python
+  tf.pack(tensors, axis=axis)
+  ```
+
+  Args:
+    values: A list of `Tensor` objects or a single `Tensor`.
+    axis: 0-D `int32` `Tensor`.  Dimension along which to concatenate.
+    name: A name for the operation (optional).
+
+  Returns:
+    A `Tensor` resulting from concatenation of the input tensors.
+  """
+  if not isinstance(values, (list, tuple)):
+    values = [values]
+  # TODO(mrry): Change to return values?
+  if len(values) == 1:  # Degenerate case of one tensor.
+    # Make a throwaway call to convert_to_tensor to make sure
+    # that axis is of the correct type, and make sure that
+    # the returned tensor is a scalar.
+    # TODO(keveman): Implement a standalone type and shape checker.
+    with ops.name_scope(name) as scope:
+      ops.convert_to_tensor(axis,
+                            name="concat_dim",
+                            dtype=dtypes.int32).get_shape(
+                            ).assert_is_compatible_with(tensor_shape.scalar())
+      return identity(values[0], name=scope)
+  return gen_array_ops._concat_v2(values=values,
+                                  axis=axis,
+                                  name=name)
+
+
+@deprecated(
+    "2016-12-13",
+    "This op will be removed after the deprecation date. "
+    "Please switch to tf.concat_v2().")
 def concat(concat_dim, values, name="concat"):
   """Concatenates tensors along one dimension.
 
@@ -983,34 +1115,7 @@ def concat(concat_dim, values, name="concat"):
   Returns:
     A `Tensor` resulting from concatenation of the input tensors.
   """
-  if not isinstance(values, (list, tuple)):
-    values = [values]
-  # TODO(mrry): Change to return values?
-  if len(values) == 1:  # Degenerate case of one tensor.
-    # Make a throwaway call to convert_to_tensor to make sure
-    # that concat_dim is of the correct type, and make sure that
-    # the returned tensor is a scalar.
-    # TODO(keveman): Implement a standalone type and shape checker.
-    with ops.name_scope(name) as scope:
-      ops.convert_to_tensor(concat_dim,
-                            name="concat_dim",
-                            dtype=dtypes.int32).get_shape(
-                            ).assert_is_compatible_with(tensor_shape.scalar())
-      return identity(values[0], name=scope)
-  return gen_array_ops._concat(concat_dim=concat_dim,
-                               values=values,
-                               name=name)
-
-
-@ops.RegisterShape("Concat")
-def _ConcatShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[0])
-
-
-@ops.RegisterShape("ConcatV2")
-def _ConcatV2Shape(op):  # pylint: disable=invalid-name
-  return common_shapes.call_cpp_shape_fn(
-      op, input_tensors_needed=[len(op.inputs)-1])
+  return concat_v2(values, concat_dim, name)
 
 
 def boolean_mask(tensor, mask, name="boolean_mask"):
@@ -1122,11 +1227,17 @@ def sparse_mask(a, mask_indices, name=None):
     return ops.IndexedSlices(out_values, out_indices, a.dense_shape)
 
 
-def split(split_dim, num_split, value, name="split"):
-  """Splits a tensor into `num_split` tensors along one dimension.
+def split(axis=None,
+          num_or_size_splits=None,
+          value=None,
+          name="split",
+          split_dim=None):
+  """DEPRECATED: use split_v; split_v rename to split happening soon.
 
-  Splits `value` along dimension `split_dim` into `num_split` smaller tensors.
-  Requires that `num_split` evenly divide `value.shape[split_dim]`.
+  Splits a tensor into `num_split` tensors along one dimension.
+
+  Splits `value` along dimension `axis` into `num_or_size_splits` smaller
+  tensors. Requires that `num_or_size_splits` evenly divide `value.shape[axis]`.
 
   For example:
 
@@ -1152,29 +1263,35 @@ def split(split_dim, num_split, value, name="split"):
   ```
 
   Args:
-    split_dim: A 0-D `int32` `Tensor`. The dimension along which to split.
+    axis: A 0-D `int32` `Tensor`. The dimension along which to split.
       Must be in the range `[0, rank(value))`.
-    num_split: A Python integer. The number of ways to split.
+    num_or_size_splits: A Python integer. The number of ways to split. Has a
+      different meaning in split_v (see docs).
     value: The `Tensor` to split.
     name: A name for the operation (optional).
+    split_dim: The old (deprecated) name for axis.
 
   Returns:
     `num_split` `Tensor` objects resulting from splitting `value`.
   """
-  return gen_array_ops._split(split_dim=split_dim,
-                              num_split=num_split,
-                              value=value,
-                              name=name)
+  axis = deprecation.deprecated_argument_lookup("axis", axis, "split_dim",
+                                                split_dim)
+  return gen_array_ops._split(
+      split_dim=axis, num_split=num_or_size_splits, value=value, name=name)
 
 
-def split_v(value, size_splits, split_dim=0, num=None, name="split_v"):
+def split_v(value=None,
+            num_or_size_splits=None,
+            axis=0,
+            num=None,
+            name="split_v"):
   """Splits a tensor into sub tensors.
 
-  If size_splits is a scalar, `num_split`, then
-  splits `value` along dimension `split_dim` into `num_split` smaller tensors.
+  If num_or_size_splits is a scalar, `num_split`, then
+  splits `value` along dimension `axis` into `num_split` smaller tensors.
   Requires that `num_split` evenly divide `value.shape[split_dim]`.
 
-  If size_splits is a tensor, then
+  If num_or_size_splits is a tensor, then
   splits `value` into len(size_splits) pieces each the same size as the input
   except along dimension split_dim where the size is size_splits[i].
 
@@ -1194,29 +1311,32 @@ def split_v(value, size_splits, split_dim=0, num=None, name="split_v"):
 
   Args:
     value: The `Tensor` to split.
-    size_splits: Either an integer indicating the number of splits along
+    num_or_size_splits: Either an integer indicating the number of splits along
       split_dim or a 1-D Tensor containing the sizes of each output tensor
       along split_dim. If an integer then it must evenly divide
       value.shape[split_dim]; otherwise the sum of sizes along the split
       dimension must match that of the input.
-    split_dim: A 0-D `int32` `Tensor`. The dimension along which to split.
+    axis: A 0-D `int32` `Tensor`. The dimension along which to split.
       Must be in the range `[0, rank(value))`. Defaults to 0.
     num: Optional, used to specify the number of outputs when it cannot be
          inferred from the shape of size_splits.
     name: A name for the operation (optional).
 
   Returns:
-    `len(size_splits)` `Tensor` objects resulting from splitting `value`.
+    if `num_or_size_splits` is a scalar returns `num_or_size_splits` `Tensor`
+    objects; if `num_or_size_splits` is a 1-D Tensor returns
+    `num_or_size_splits.get_shape[0]` `Tensor` objects resulting from splitting
+    `value`.
 
   Raises:
     ValueError: If `num` is unspecified and cannot be inferred.
   """
-  if isinstance(size_splits, six.integer_types):
+  if isinstance(num_or_size_splits, six.integer_types):
     return gen_array_ops._split(
-        split_dim=split_dim, num_split=size_splits, value=value, name=name)
+        split_dim=axis, num_split=num_or_size_splits, value=value, name=name)
   else:
     if num is None:
-      size_splits = ops.convert_to_tensor(size_splits)
+      size_splits = ops.convert_to_tensor(num_or_size_splits)
       size_splits_shape = size_splits.get_shape()
       num = size_splits_shape.dims
     if num is None:
@@ -1224,7 +1344,7 @@ def split_v(value, size_splits, split_dim=0, num=None, name="split_v"):
     return gen_array_ops._split_v(
         value=value,
         size_splits=size_splits,
-        split_dim=split_dim,
+        split_dim=axis,
         num_split=num[0],
         name=name)
 
@@ -1557,7 +1677,7 @@ def sparse_placeholder(dtype, shape=None, name=None):
     print(sess.run(y, feed_dict={
       x: (indices, values, shape)}))  # Will succeed.
 
-    sp = tf.SparseTensor(indices=indices, values=values, shape=shape)
+    sp = tf.SparseTensor(indices=indices, values=values, dense_shape=shape)
     sp_value = sp.eval(session)
     print(sess.run(y, feed_dict={x: sp_value}))  # Will succeed.
   ```
@@ -1732,16 +1852,6 @@ def meshgrid(*args, **kwargs):
     return [x * mult_fact for x in output]
 
 
-@ops.RegisterShape("Slice")
-# pylint: disable=invalid-name
-def _DelegateSliceShape(op):
-  return common_shapes.call_cpp_shape_fn(
-      op,
-      input_tensors_needed=[2],
-      input_tensors_as_shapes_needed=[1])
-# pylint: enable=invalid-name
-
-
 NEW_AXIS = -1
 SHRINK_AXIS = -2
 
@@ -1786,67 +1896,6 @@ def _compute_size_of_strided_dim(shrink, spec, size):
       return interval_length // stride + remainder
   else:
     return unknown  # unknown because stride is unknown
-
-
-@ops.RegisterShape("StridedSliceGrad")
-def _StridedSliceGradShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[0])
-
-
-@ops.RegisterShape("StridedSlice")
-def _DelegateStridedSliceShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[1, 2, 3])
-
-
-@ops.RegisterShape("ExpandDims")
-def _ExpandDims(op):
-  return common_shapes.call_cpp_shape_fn(
-      op, input_tensors_needed=[1])
-
-
-@ops.RegisterShape("Reshape")
-def _DelegateReshapeShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_as_shapes_needed=[1])
-
-
-@ops.RegisterShape("Fill")
-def _DelegateFillShape(op):
-  return common_shapes.call_cpp_shape_fn(
-      op, input_tensors_needed=[0], input_tensors_as_shapes_needed=[0])
-
-
-@ops.RegisterShape("Pad")
-@ops.RegisterShape("MirrorPad")
-def _PadShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[1])
-
-
-@ops.RegisterShape("MirrorPadGrad")
-def _MirrorPadGradShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[1])
-
-
-@ops.RegisterShape("Transpose")
-def _TransposeShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[1])
-
-
-@ops.RegisterShape("Split")
-def _SplitShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[0])
-
-
-@ops.RegisterShape("Tile")
-def _DelegateTileShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_as_shapes_needed=[1])
-
-
-@ops.RegisterShape("TileGrad")
-def _DelegateTileGradShape(op):
-  return common_shapes.call_cpp_shape_fn(
-      op,
-      input_tensors_as_shapes_needed=[1],
-      debug_python_shape_fn=_TileGradShape)
 
 
 def _TileGradShape(op):
@@ -1943,11 +1992,6 @@ def edit_distance(hypothesis, truth, normalize=True, name="edit_distance"):
                                       truth.shape,
                                       normalize=normalize,
                                       name=name)
-
-
-@ops.RegisterShape("EditDistance")
-def _EditDistanceShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[2, 5])
 
 
 @ops.RegisterGradient("FakeQuantWithMinMaxArgs")
@@ -2076,26 +2120,6 @@ def batch_to_space(input, crops, block_size, name=None):  # pylint: disable=rede
 
 
 batch_to_space.__doc__ = gen_array_ops._batch_to_space.__doc__
-
-
-@ops.RegisterShape("SpaceToBatch")
-def _SpaceToBatchShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[1])
-
-
-@ops.RegisterShape("SpaceToBatchND")
-def _SpaceToBatchNDShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[1, 2])
-
-
-@ops.RegisterShape("BatchToSpace")
-def _BatchToSpaceShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[1])
-
-
-@ops.RegisterShape("BatchToSpaceND")
-def _BatchToSpaceNDShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[1, 2])
 
 
 def one_hot(indices, depth, on_value=None, off_value=None,
@@ -2266,11 +2290,6 @@ def one_hot(indices, depth, on_value=None, off_value=None,
                                   name)
 
 
-@ops.RegisterShape("OneHot")
-def _OneHotShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_needed=[1])
-
-
 def sequence_mask(lengths, maxlen=None, dtype=dtypes.bool, name=None):
   """Return a mask tensor representing the first N positions of each row.
 
@@ -2333,7 +2352,7 @@ def squeeze(input, axis=None, name=None, squeeze_dims=None):
   ```prettyprint
   # 't' is a tensor of shape [1, 2, 1, 3, 1, 1]
   shape(squeeze(t)) ==> [2, 3]
-            ```
+  ```
 
   Or, to remove specific size 1 dimensions:
 
@@ -2411,17 +2430,33 @@ def where(condition, x=None, y=None, name=None):
   if x is None and y is None:
     return gen_array_ops.where(input=condition, name=name)
   elif x is not None and y is not None:
-    return gen_math_ops.select(condition=condition, t=x, e=y, name=name)
+    return gen_math_ops._select(condition=condition, t=x, e=y, name=name)
   else:
     raise ValueError("x and y must both be non-None or both be None.")
 
 
-@ops.RegisterShape("QuantizedReshape")
-def _DelegateQuantizedReshapeShape(op):
-  return common_shapes.call_cpp_shape_fn(
-      op, input_tensors_as_shapes_needed=[1])
+# pylint: disable=redefined-builtin
+def reverse_sequence(input,
+                     seq_lengths,
+                     seq_axis=None,
+                     batch_axis=None,
+                     name=None,
+                     seq_dim=None,
+                     batch_dim=None):
+  seq_axis = deprecation.deprecated_argument_lookup("seq_axis", seq_axis,
+                                                    "seq_dim", seq_dim)
+  batch_axis = deprecation.deprecated_argument_lookup("batch_axis", batch_axis,
+                                                      "batch_dim", batch_dim)
+  return gen_array_ops.reverse_sequence(
+      input=input,
+      seq_lengths=seq_lengths,
+      seq_dim=seq_axis,
+      batch_dim=batch_axis,
+      name=name)
+# pylint: enable=redefined-builtin
 
 
-@ops.RegisterShape("ScatterNd")
-def _DelegateScatterNdShape(op):
-  return common_shapes.call_cpp_shape_fn(op, input_tensors_as_shapes_needed=[2])
+reverse_sequence.__doc__ = deprecation.rewrite_argument_docstring(
+    deprecation.rewrite_argument_docstring(
+        gen_array_ops.reverse_sequence.__doc__, "batch_dim", "batch_axis"),
+    "seq_dim", "seq_axis")

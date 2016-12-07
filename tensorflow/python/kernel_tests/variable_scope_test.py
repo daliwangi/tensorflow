@@ -21,6 +21,7 @@ from __future__ import print_function
 import numpy
 import tensorflow as tf
 
+from tensorflow.python.framework import dtypes
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import variable_scope
 
@@ -74,10 +75,10 @@ class VariableScopeTest(tf.test.TestCase):
       with tf.variable_scope("tower") as tower:
         with tf.variable_scope("foo", dtype=tf.float16):
           v = tf.get_variable("v", [])
-          self.assertEqual(v.dtype, tf.float16_ref)
+          self.assertEqual(v.dtype, dtypes.float16_ref)
         with tf.variable_scope(tower, dtype=tf.float16):
           w = tf.get_variable("w", [])
-          self.assertEqual(w.dtype, tf.float16_ref)
+          self.assertEqual(w.dtype, dtypes.float16_ref)
 
   def testInitFromNonTensorValue(self):
     with self.test_session() as sess:
@@ -624,7 +625,7 @@ class VariableScopeTest(tf.test.TestCase):
           self.assertEqual(local_var.name, "outer/w:0")
 
       # Since variable is local, it should be in the local variable collection
-      # but not the the trainable collection.
+      # but not the trainable collection.
       self.assertIn(local_var, tf.get_collection(tf.GraphKeys.LOCAL_VARIABLES))
       self.assertIn(local_var, tf.get_collection("foo"))
       self.assertNotIn(
@@ -640,7 +641,7 @@ class VariableScopeTest(tf.test.TestCase):
     varname_type = []
 
     def device_func(op):
-      if op.type == "Variable":
+      if op.type in ["Variable", "VariableV2"]:
         varname_type.append((op.name, op.get_attr("dtype")))
       return "/gpu:0"
 
@@ -678,9 +679,9 @@ class VariableScopeWithPartitioningTest(tf.test.TestCase):
       v_concat = v.as_tensor()
       self.assertEqual(v_concat.name, "scope0/name0:0")
       variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
-      self.assertTrue("scope0/name0/part_0:0" in [x.name for x in variables])
-      self.assertTrue("scope0/name0/part_1:0" in [x.name for x in variables])
-      self.assertFalse("scope0/name0/part_2:0" in [x.name for x in variables])
+      self.assertIn("scope0/name0/part_0:0", [x.name for x in variables])
+      self.assertIn("scope0/name0/part_1:0", [x.name for x in variables])
+      self.assertNotIn("scope0/name0/part_2:0", [x.name for x in variables])
 
   def testBreaksIfPartitioningChanges(self):
     with tf.variable_scope("scope0", partitioner=axis0_into2_partitioner):
@@ -723,6 +724,13 @@ class VariableScopeWithPartitioningTest(tf.test.TestCase):
       self.assertEqual(axis0_into2_partitioner, vs.partitioner)
       with tf.variable_scope(vs) as vs1:
         self.assertEqual(axis0_into2_partitioner, vs1.partitioner)
+
+  def testScalarIgnoresPartitioner(self):
+    with tf.variable_scope("scope0", partitioner=axis0_into2_partitioner):
+      v = tf.get_variable("name0", shape=())
+      self.assertEqual(v.name, "scope0/name0:0")
+      variables = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)
+      self.assertIn("scope0/name0:0", [x.name for x in variables])
 
   def testPartitionConcatenatesAlongCorrectAxis(self):
     def _part_axis_0(**unused_kwargs):

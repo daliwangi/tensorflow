@@ -82,12 +82,12 @@ class Variable(object):
   ```
 
   The most common initialization pattern is to use the convenience function
-  `global_variable_initializers()` to add an Op to the graph that initializes
+  `global_variables_initializer()` to add an Op to the graph that initializes
   all the variables. You then run that Op after launching the graph.
 
   ```python
   # Add an Op to initialize global variables.
-  init_op = tf.global_variable_initializers()
+  init_op = tf.global_variables_initializer()
 
   # Launch the graph in a session.
   with tf.Session() as sess:
@@ -433,8 +433,6 @@ class Variable(object):
 
     Returns a `Tensor` which holds the value of the variable.  You can not
     assign a new value to this tensor as it is not a reference to the variable.
-    See [`ref()`](#Variable.ref) if you want to get a reference to the
-    variable.
 
     To avoid copies, if the consumer of the returned value is on the same device
     as the variable, this actually returns the live value of the variable, not
@@ -446,7 +444,18 @@ class Variable(object):
     """
     return self._snapshot
 
-  def ref(self):
+  def read_value(self):
+    """Returns the value of this variable, read in the current context.
+
+    Can be different from value() if it's on another device, with control
+    dependencies, etc.
+
+    Returns:
+      A `Tensor` containing the value of the variable.
+    """
+    return array_ops.identity(self._variable, name="read")
+
+  def _ref(self):
     """Returns a reference to this variable.
 
     You usually do not need to call this method as all ops that need a reference
@@ -462,6 +471,15 @@ class Variable(object):
     """
     return self._variable
 
+  def set_shape(self, shape):
+    """Overrides the shape for this variable.
+
+    Args:
+      shape: the `TensorShape` representing the overridden shape.
+    """
+    self._ref().set_shape(shape)
+    self.value().set_shape(shape)
+
   def eval(self, session=None):
     """In a session, computes and returns the value of this variable.
 
@@ -474,7 +492,7 @@ class Variable(object):
 
     ```python
     v = tf.Variable([1, 2])
-    init = tf.global_variable_initializers()
+    init = tf.global_variables_initializer()
 
     with tf.Session() as sess:
         sess.run(init)
@@ -499,6 +517,10 @@ class Variable(object):
 
     You should use this instead of the variable itself to initialize another
     variable with a value that depends on the value of this variable.
+
+    Beware of using initialized_value except during initialization:
+    initialized_value causes the Variable's initializer op to be run, so running
+    this op resets the variable to the initial value.
 
     ```python
     # Initialize 'v' with a random tensor.
@@ -641,7 +663,7 @@ class Variable(object):
           "Incompatible type conversion requested to type '%s' for variable "
           "of type '%s'" % (dtype.name, v.dtype.name))
     if as_ref:
-      return v.ref()
+      return v._ref()  # pylint: disable=protected-access
     else:
       return v.value()
 
@@ -1229,7 +1251,7 @@ def assert_variables_initialized(var_list=None):
   if not var_list:
     var_list = []
     for op in ops.get_default_graph().get_operations():
-      if op.type in ["Variable", "AutoReloadVariable"]:
+      if op.type in ["Variable", "VariableV2", "AutoReloadVariable"]:
         var_list.append(op.outputs[0])
   if not var_list:
     return None

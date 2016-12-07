@@ -37,6 +37,7 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import state_ops
 from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import variables as tf_variables
 from tensorflow.python.platform import tf_logging as logging
 
 
@@ -65,7 +66,7 @@ class ForestHParams(object):
                split_after_samples=250,
                min_split_samples=5,
                valid_leaf_threshold=1,
-               dominate_method='hoeffding',
+               dominate_method='bootstrap',
                dominate_fraction=0.99,
                **kwargs):
     self.num_trees = num_trees
@@ -111,26 +112,13 @@ class ForestHParams(object):
     # regression and avoids having to recompute sums for classification.
     self.num_output_columns = self.num_classes + 1
 
-    # The Random Forest literature recommends sqrt(# features) for
-    # classification problems, and p/3 for regression problems.
-    # TODO(thomaswc): Consider capping this for large number of features.
-    self.num_splits_to_consider = (
-        self.num_splits_to_consider or
-        max(10, int(math.ceil(math.sqrt(self.num_features)))))
+    # Our experiments have found that num_splits_to_consider = num_features
+    # gives good accuracy.
+    self.num_splits_to_consider = self.num_splits_to_consider or min(
+        self.num_features, 1000)
 
-    # max_fertile_nodes doesn't effect performance, only training speed.
-    # We therefore set it primarily based upon space considerations.
-    # Each fertile node takes up num_splits_to_consider times as much
-    # as space as a non-fertile node.  We want the fertile nodes to in
-    # total only take up as much space as the non-fertile nodes, so
-    num_fertile = int(math.ceil(self.max_nodes / self.num_splits_to_consider))
-    # But always use at least 1000 accumulate slots.
-    num_fertile = max(num_fertile, 1000)
-    self.max_fertile_nodes = self.max_fertile_nodes or num_fertile
-    # But it also never needs to be larger than the number of leaves,
-    # which is max_nodes / 2.
-    self.max_fertile_nodes = min(self.max_fertile_nodes,
-                                 int(math.ceil(self.max_nodes / 2.0)))
+    self.max_fertile_nodes = (self.max_fertile_nodes or
+                              int(math.ceil(self.max_nodes / 2.0)))
 
     # We have num_splits_to_consider slots to fill, and we want to spend
     # approximately split_after_samples samples initializing them.
@@ -146,6 +134,17 @@ class ForestHParams(object):
     self.base_random_seed = getattr(self, 'base_random_seed', 0)
 
     return self
+
+
+def get_epoch_variable():
+  """Returns the epoch variable, or [0] if not defined."""
+  # Grab epoch variable defined in
+  # //third_party/tensorflow/python/training/input.py::limit_epochs
+  for v in tf_variables.local_variables():
+    if 'limit_epochs/epoch' in v.op.name:
+      return array_ops.reshape(v, [1])
+  # TODO(thomaswc): Access epoch from the data feeder.
+  return [0]
 
 
 # A simple container to hold the training variables for a single tree.
@@ -339,8 +338,11 @@ class RandomForestGraphs(object):
     return array_ops.concat(
         1, [split_data[ind] for ind in self.params.bagged_features[tree_num]])
 
-  def training_graph(self, input_data, input_labels, data_spec=None,
-                     epoch=None, **tree_kwargs):
+  def training_graph(self,
+                     input_data,
+                     input_labels,
+                     data_spec=None,
+                     **tree_kwargs):
     """Constructs a TF graph for training a random forest.
 
     Args:
@@ -349,7 +351,6 @@ class RandomForestGraphs(object):
         input_data.
       data_spec: A list of tf.dtype values specifying the original types of
         each column.
-      epoch: A tensor or placeholder for the epoch the training data comes from.
       **tree_kwargs: Keyword arguments passed to each tree's training_graph.
 
     Returns:
@@ -368,7 +369,8 @@ class RandomForestGraphs(object):
         if self.params.bagging_fraction < 1.0:
           # TODO(thomaswc): This does sampling without replacment.  Consider
           # also allowing sampling with replacement as an option.
-          batch_size = array_ops.slice(array_ops.shape(input_data), [0], [1])
+          batch_size = array_ops.strided_slice(
+              array_ops.shape(input_data), [0], [1])
           r = random_ops.random_uniform(batch_size, seed=seed)
           mask = math_ops.less(
               r, array_ops.ones_like(r) * self.params.bagging_fraction)
@@ -387,7 +389,6 @@ class RandomForestGraphs(object):
           tree_graphs.append(
               self.trees[i].training_graph(
                   tree_data, tree_labels, seed, data_spec=data_spec,
-                  epoch=([0] if epoch is None else epoch),
                   **tree_kwargs))
 
     return control_flow_ops.group(*tree_graphs, name='train')
@@ -535,9 +536,10 @@ class RandomTreeGraphs(object):
       return control_flow_ops.no_op()
 
     return control_flow_ops.cond(
-        math_ops.equal(array_ops.squeeze(array_ops.slice(
-            self.variables.tree, [0, 0], [1, 1])), -2),
-        _init_tree, _nothing)
+        math_ops.equal(
+            array_ops.squeeze(
+                array_ops.strided_slice(self.variables.tree, [0, 0], [1, 1])),
+            -2), _init_tree, _nothing)
 
   def _gini(self, class_counts):
     """Calculate the Gini impurity.
@@ -602,7 +604,6 @@ class RandomTreeGraphs(object):
                      input_labels,
                      random_seed,
                      data_spec,
-                     epoch=None,
                      input_weights=None):
 
     """Constructs a TF graph for training a random tree.
@@ -615,14 +616,13 @@ class RandomTreeGraphs(object):
         means use the current time as the seed.
       data_spec: A list of tf.dtype values specifying the original types of
         each column.
-      epoch: A tensor or placeholder for the epoch the training data comes from.
       input_weights: A float tensor or placeholder holding per-input weights,
         or None if all inputs are to be weighted equally.
 
     Returns:
       The last op in the random tree training graph.
     """
-    epoch = [0] if epoch is None else epoch
+    epoch = math_ops.to_int32(get_epoch_variable())
 
     if input_weights is None:
       input_weights = []
@@ -633,7 +633,7 @@ class RandomTreeGraphs(object):
     if isinstance(input_data, sparse_tensor.SparseTensor):
       sparse_indices = input_data.indices
       sparse_values = input_data.values
-      sparse_shape = input_data.shape
+      sparse_shape = input_data.dense_shape
       input_data = []
 
     # Count extremely random stats.
@@ -890,7 +890,7 @@ class RandomTreeGraphs(object):
     if isinstance(input_data, sparse_tensor.SparseTensor):
       sparse_indices = input_data.indices
       sparse_values = input_data.values
-      sparse_shape = input_data.shape
+      sparse_shape = input_data.dense_shape
       input_data = []
     return self.inference_ops.tree_predictions(
         input_data, sparse_indices, sparse_values, sparse_shape, data_spec,

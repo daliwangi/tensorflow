@@ -169,7 +169,7 @@ typedef std::unordered_map<string, NameInfoItem> NameInfoIndex;
 Status AddArgName(NameInfoIndex* name_info, const string& arg,
                   const NameInfoItem& item) {
   if (!name_info->insert({arg, item}).second) {
-    return errors::InvalidArgument("Duplicated arg name.");
+    return errors::InvalidArgument("Duplicated arg name: ", arg);
   }
   return Status::OK();
 }
@@ -206,7 +206,7 @@ Status BuildInputArgIndex(const OpDef::ArgDef& arg_def,
 Status AddRetName(NameInfoIndex* name_info, const string& ret,
                   const NameInfoItem& item) {
   if (!name_info->insert({ret, item}).second) {
-    return errors::InvalidArgument("Duplicated ret name.");
+    return errors::InvalidArgument("Duplicated ret name: ", ret);
   }
   return Status::OK();
 }
@@ -423,12 +423,21 @@ Status InstantiateNode(const NodeDef& fnode,
       return errors::InvalidArgument("Expected input[", i, "] == '", input,
                                      "' to be a control input.");
     }
-    const NameInfoItem* item = gtl::FindOrNull(name_info, input.substr(1));
-    if (item == nullptr) {
+    int nid = -1;
+    const string node_name = input.substr(1);
+    const string node_colon = node_name + ":";
+    for (const auto& p : name_info) {
+      if (p.first == node_name ||
+          tensorflow::StringPiece(p.first).starts_with(node_colon)) {
+        nid = p.second.nid;
+        break;
+      }
+    }
+    if (nid == -1) {
       return errors::InvalidArgument("input[", i, "] == '", input,
                                      "', is not found.");
     }
-    gnode->add_input(Dep(item->nid));
+    gnode->add_input(Dep(nid));
   }
 
   // Attrs.
@@ -732,6 +741,8 @@ Status InstantiateFunction(const FunctionDef& fdef,
                            const InstantiateAttrValueMap& attr_values,
                            GetFunctionSignature get_function,
                            InstantiationResult* result) {
+  VLOG(3) << "Instantiation Function: " << Print(fdef);
+
   const OpDef& sig = fdef.signature();
   GraphDef* gdef = &result->gdef;
   gdef->Clear();
@@ -761,7 +772,8 @@ Status InstantiateFunction(const FunctionDef& fdef,
   // Makes a copy of all attrs in fdef and substitutes placeholders.
   // After this step, every attr is bound to a concrete value.
   std::vector<InstantiateAttrValueMap> node_attrs;
-  if (fdef.node_def_size() > 0) {
+  if (false && fdef.node_def_size() > 0) {
+    // TODO(josh11b): enable this branch.
     node_attrs.resize(fdef.node_def_size());
     for (int i = 0; i < fdef.node_def_size(); ++i) {
       for (auto attr : fdef.node_def(i).attr()) {

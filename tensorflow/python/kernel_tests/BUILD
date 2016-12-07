@@ -12,6 +12,7 @@ licenses(["notice"])  # Apache 2.0
 
 load("//tensorflow:tensorflow.bzl", "tf_py_test")
 load("//tensorflow:tensorflow.bzl", "cuda_py_test")
+load("//tensorflow:tensorflow.bzl", "sycl_py_test")
 
 # CPU only tests should use tf_py_test, GPU tests use cuda_py_test
 # Please avoid the py_tests and cuda_py_tests (plural) while we
@@ -116,6 +117,14 @@ tf_py_test(
 )
 
 tf_py_test(
+    name = "decode_image_op_test",
+    size = "small",
+    srcs = ["decode_image_op_test.py"],
+    additional_deps = ["//tensorflow:tensorflow_py"],
+    data = ["//tensorflow/core:image_testdata"],
+)
+
+tf_py_test(
     name = "decode_raw_op_test",
     size = "small",
     srcs = ["decode_raw_op_test.py"],
@@ -189,6 +198,13 @@ tf_py_test(
     name = "logging_ops_test",
     size = "small",
     srcs = ["logging_ops_test.py"],
+    additional_deps = ["//tensorflow:tensorflow_py"],
+)
+
+tf_py_test(
+    name = "losses_test",
+    size = "small",
+    srcs = ["losses_test.py"],
     additional_deps = ["//tensorflow:tensorflow_py"],
 )
 
@@ -857,15 +873,6 @@ cuda_py_test(
 )
 
 cuda_py_test(
-    name = "rnn_cell_test",
-    size = "small",
-    srcs = ["rnn_cell_test.py"],
-    additional_deps = [
-        "//tensorflow:tensorflow_py",
-    ],
-)
-
-cuda_py_test(
     name = "scalar_strict_test",
     size = "small",
     srcs = ["scalar_strict_test.py"],
@@ -1214,21 +1221,13 @@ cuda_py_test(
     additional_deps = [
         "//tensorflow:tensorflow_py",
     ],
+    shard_count = 10,
 )
 
 cuda_py_test(
     name = "scatter_ops_test",
     size = "large",  # NOTE: This is not run.
     srcs = ["scatter_ops_test.py"],
-    additional_deps = [
-        "//tensorflow:tensorflow_py",
-    ],
-)
-
-cuda_py_test(
-    name = "seq2seq_test",
-    size = "medium",
-    srcs = ["seq2seq_test.py"],
     additional_deps = [
         "//tensorflow:tensorflow_py",
     ],
@@ -1354,12 +1353,50 @@ cuda_py_test(
 )
 
 cuda_py_test(
+    name = "qr_op_test",
+    size = "medium",
+    srcs = ["qr_op_test.py"],
+    additional_deps = ["//tensorflow:tensorflow_py"],
+    shard_count = 20,
+    tags = ["nomsan"],  # fails in msan from numpy calls
+)
+
+cuda_py_test(
     name = "svd_op_test",
     size = "medium",
     srcs = ["svd_op_test.py"],
     additional_deps = ["//tensorflow:tensorflow_py"],
     shard_count = 20,
     tags = ["nomsan"],  # fails in msan from numpy calls
+)
+
+sycl_py_test(
+    name = "basic_gpu_test",
+    size = "small",
+    srcs = ["basic_gpu_test.py"],
+    additional_deps = ["//tensorflow:tensorflow_py"],
+)
+
+tf_py_test(
+    name = "sets_test",
+    size = "small",
+    srcs = ["sets_test.py"],
+    additional_deps = ["//tensorflow:tensorflow_py"],
+)
+
+tf_py_test(
+    name = "metrics_test",
+    size = "small",
+    srcs = ["metrics_test.py"],
+    additional_deps = ["//tensorflow:tensorflow_py"],
+    shard_count = 3,
+)
+
+tf_py_test(
+    name = "confusion_matrix_test",
+    size = "small",
+    srcs = ["confusion_matrix_test.py"],
+    additional_deps = ["//tensorflow:tensorflow_py"],
 )
 
 filegroup(
